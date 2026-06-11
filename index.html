@@ -1,0 +1,323 @@
+
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Creepster&display=swap');
+*{box-sizing:border-box;margin:0;padding:0}
+#scene{
+  background:#000;min-height:600px;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  padding:2rem 1rem;position:relative;overflow:hidden;
+  font-family:'Creepster',cursive,sans-serif;
+}
+#flicker{position:absolute;inset:0;background:#1a0000;opacity:0;pointer-events:none;z-index:1}
+#vignette{position:absolute;inset:0;background:radial-gradient(ellipse at center,transparent 40%,#000 100%);pointer-events:none;z-index:2}
+#content{position:relative;z-index:3;display:flex;flex-direction:column;align-items:center;width:100%}
+#title-text{font-family:'Creepster',cursive;font-size:28px;color:#8b0000;letter-spacing:4px;text-transform:uppercase;margin-bottom:1.5rem;text-align:center}
+#heart-container{position:relative;width:140px;height:140px;display:flex;align-items:center;justify-content:center;margin-bottom:1.5rem}
+#ring1,#ring2{position:absolute;width:140px;height:140px;border-radius:50%;border:2px solid #8b0000;opacity:0;transform:scale(1)}
+#bpm-display{font-family:'Creepster',cursive;font-size:52px;color:#cc0000;letter-spacing:2px;line-height:1}
+#bpm-label{font-size:12px;color:#660000;letter-spacing:3px;text-transform:uppercase;margin-top:2px;margin-bottom:1.2rem}
+#ecg-wrap{width:100%;max-width:340px;margin-bottom:1.2rem;position:relative}
+#ecg-canvas{display:block;width:100%;height:80px}
+#scanline{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;background:repeating-linear-gradient(0deg,rgba(0,0,0,0.08) 0px,rgba(0,0,0,0.08) 1px,transparent 1px,transparent 3px)}
+#phase-label{font-family:'Creepster',cursive;font-size:15px;color:#660000;letter-spacing:2px;height:20px;text-align:center;margin-bottom:1rem}
+#controls{display:flex;flex-direction:column;align-items:center;gap:10px;width:100%;max-width:280px}
+#btn{padding:10px 0;width:100%;background:#0a0000;border:1px solid #660000;color:#cc0000;font-family:'Creepster',cursive;font-size:16px;letter-spacing:3px;cursor:pointer;text-transform:uppercase}
+#btn:hover{background:#1a0000;border-color:#8b0000}
+#sound-toggle{font-size:12px;color:#440000;letter-spacing:2px;cursor:pointer;border:none;background:none;text-transform:uppercase;text-decoration:underline;text-underline-offset:3px}
+#tap-hint{font-family:'Creepster',cursive;font-size:13px;color:#440000;letter-spacing:2px;text-align:center;margin-top:8px;min-height:18px}
+#blood-canvas{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:0}
+</style>
+
+<div id="scene">
+  <canvas id="blood-canvas"></canvas>
+  <div id="flicker"></div>
+  <div id="vignette"></div>
+  <div id="content">
+    <h2 class="sr-only">Batimentos cardíacos estilo terror com autoplay</h2>
+    <div id="title-text">vital signs</div>
+    <div id="heart-container">
+      <div id="ring1"></div>
+      <div id="ring2"></div>
+      <svg width="100" height="110" viewBox="0 0 100 110" role="img" aria-hidden="true">
+        <path id="heart-path"
+          d="M50 85 C50 85 10 55 10 30 C10 15 22 5 35 5 C42 5 48 9 50 13 C52 9 58 5 65 5 C78 5 90 15 90 30 C90 55 50 85 50 85 Z"
+          fill="#8b0000"/>
+        <path id="drip1" d="M46 85 Q45 93 46 100 Q47 106 46 110" fill="none" stroke="#660000" stroke-width="2.5" stroke-linecap="round" opacity="0"/>
+        <path id="drip2" d="M53 84 Q54 94 53 102 Q52 108 53 112" fill="none" stroke="#550000" stroke-width="2" stroke-linecap="round" opacity="0"/>
+      </svg>
+    </div>
+    <div id="bpm-display">60</div>
+    <div id="bpm-label">beats per minute</div>
+    <div id="ecg-wrap">
+      <canvas id="ecg-canvas" width="680" height="160"></canvas>
+      <div id="scanline"></div>
+    </div>
+    <div id="phase-label">still alive... for now</div>
+    <div id="controls">
+      <button id="btn">&#9654; begin</button>
+      <button id="sound-toggle">&#128266; tap to enable sound</button>
+    </div>
+    <div id="tap-hint">tap anywhere to enable sound</div>
+  </div>
+</div>
+
+<script>
+(function(){
+  const heartPath=document.getElementById('heart-path');
+  const ring1=document.getElementById('ring1');
+  const ring2=document.getElementById('ring2');
+  const drip1=document.getElementById('drip1');
+  const drip2=document.getElementById('drip2');
+  const bpmEl=document.getElementById('bpm-display');
+  const phaseEl=document.getElementById('phase-label');
+  const btn=document.getElementById('btn');
+  const soundToggle=document.getElementById('sound-toggle');
+  const tapHint=document.getElementById('tap-hint');
+  const ecgCanvas=document.getElementById('ecg-canvas');
+  const ctx=ecgCanvas.getContext('2d');
+  const flickerEl=document.getElementById('flicker');
+  const bloodCanvas=document.getElementById('blood-canvas');
+  const bctx=bloodCanvas.getContext('2d');
+
+  const W=680,H=160,MID=H/2;
+  let running=false,soundEnabled=true,audioCtx=null,audioUnlocked=false;
+  let currentBpm=60,phaseIdx=0,phaseStart=0;
+  let animFrame=null,beatTimeout=null,prevTs=null;
+  let segments=[],headX=0,viewX=0;
+  let bw=0,bh=0;
+
+  function resizeBlood(){
+    bw=bloodCanvas.offsetWidth||340;
+    bh=bloodCanvas.offsetHeight||600;
+    bloodCanvas.width=bw;bloodCanvas.height=bh;
+  }
+  resizeBlood();
+
+  const phases=[
+    {bpm:60, duration:4000,label:'still alive... for now'},
+    {bpm:72, duration:3000,label:'something is watching...'},
+    {bpm:90, duration:3000,label:'do not turn around...'},
+    {bpm:115,duration:3000,label:'it is getting closer...'},
+    {bpm:145,duration:3000,label:'RUN.'},
+    {bpm:180,duration:3500,label:'there is no escape.'},
+  ];
+
+  const drops=[];
+  function spawnDrop(){
+    drops.push({x:Math.random()*bw,y:-15,vy:0.5+Math.random()*0.7,r:1.5+Math.random()*2.5,len:10+Math.random()*22,op:0.5+Math.random()*0.5});
+  }
+  function drawBlood(){
+    bctx.clearRect(0,0,bw,bh);
+    const speed=currentBpm/80;
+    for(let i=drops.length-1;i>=0;i--){
+      const d=drops[i];d.y+=d.vy*speed;
+      bctx.strokeStyle=`rgba(${90+Math.round(currentBpm/3)},0,0,${d.op})`;
+      bctx.lineWidth=d.r;bctx.lineCap='round';
+      bctx.beginPath();bctx.moveTo(d.x,d.y);bctx.lineTo(d.x,d.y+d.len);bctx.stroke();
+      if(d.y>bh+30)drops.splice(i,1);
+    }
+    if(Math.random()<0.035+currentBpm/2800)spawnDrop();
+  }
+
+  function doFlicker(){
+    if(Math.random()<0.04){
+      const intensity=Math.min(0.18,(currentBpm-60)/500);
+      flickerEl.style.opacity=String(intensity+Math.random()*0.08);
+      setTimeout(()=>flickerEl.style.opacity='0',40+Math.random()*60);
+    }
+  }
+
+  function createAudio(){
+    if(!audioCtx){
+      audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+    }
+  }
+
+  function unlockAudio(){
+    if(audioUnlocked)return;
+    createAudio();
+    if(audioCtx.state==='suspended'){
+      audioCtx.resume().then(()=>{audioUnlocked=true;updateSoundUI();});
+    }else{
+      audioUnlocked=true;updateSoundUI();
+    }
+  }
+
+  function updateSoundUI(){
+    if(audioUnlocked&&soundEnabled){
+      soundToggle.textContent='🔊 sound on';
+      tapHint.textContent='';
+    }else if(!audioUnlocked){
+      soundToggle.textContent='🔇 tap to enable sound';
+      tapHint.textContent='tap anywhere to enable sound';
+    }else{
+      soundToggle.textContent='🔇 sound off';
+      tapHint.textContent='';
+    }
+  }
+
+  function playBeat(bpm){
+    if(!soundEnabled||!audioUnlocked||!audioCtx)return;
+    try{
+      if(audioCtx.state==='suspended')audioCtx.resume();
+      const t=audioCtx.currentTime;
+      function thump(st,freq,vol,dur){
+        const o=audioCtx.createOscillator();
+        const g=audioCtx.createGain();
+        o.connect(g);g.connect(audioCtx.destination);
+        o.type='sine';
+        o.frequency.setValueAtTime(freq,st);
+        o.frequency.exponentialRampToValueAtTime(freq*0.3,st+dur);
+        g.gain.setValueAtTime(0,st);
+        g.gain.linearRampToValueAtTime(vol,st+0.01);
+        g.gain.exponentialRampToValueAtTime(0.001,st+dur);
+        o.start(st);o.stop(st+dur+0.02);
+      }
+      const v=Math.min(0.5,0.3+bpm/600);
+      thump(t,55,v*1.1,0.12);thump(t,38,v*0.8,0.15);
+      const d=Math.max(0.05,60/bpm*0.28);
+      thump(t+d,50,v,0.1);thump(t+d,35,v*0.7,0.12);
+      if(bpm>120){
+        const o2=audioCtx.createOscillator();
+        const g2=audioCtx.createGain();
+        o2.connect(g2);g2.connect(audioCtx.destination);
+        o2.type='sawtooth';o2.frequency.setValueAtTime(30,t);
+        o2.frequency.linearRampToValueAtTime(24,t+0.3);
+        g2.gain.setValueAtTime(0.04,t);g2.gain.linearRampToValueAtTime(0,t+0.3);
+        o2.start(t);o2.stop(t+0.35);
+      }
+    }catch(e){}
+  }
+
+  function pulseFX(bpm){
+    const scale=1+0.2*Math.min(bpm/120,1.5);
+    heartPath.style.transition='transform 0.07s ease-out';
+    heartPath.style.transform=`scale(${scale})`;
+    heartPath.style.transformOrigin='50px 50px';
+    const r=Math.min(190,100+Math.round(bpm*0.42));
+    heartPath.style.fill=`rgb(${r},0,0)`;
+    setTimeout(()=>{heartPath.style.transition='transform 0.2s ease-in';heartPath.style.transform='scale(1)';},85);
+    drip1.style.transition='opacity 0.1s';drip1.style.opacity='0.8';
+    drip2.style.transition='opacity 0.1s';drip2.style.opacity='0.6';
+    setTimeout(()=>{drip1.style.transition='opacity 0.8s';drip1.style.opacity='0';},200);
+    setTimeout(()=>{drip2.style.transition='opacity 0.9s';drip2.style.opacity='0';},300);
+    [ring1,ring2].forEach((r2,i)=>{
+      setTimeout(()=>{
+        r2.style.transition='none';r2.style.transform='scale(1)';r2.style.opacity=i===0?'0.6':'0.35';
+        r2.style.borderColor=`rgb(${80+Math.round(bpm/3)},0,0)`;
+        setTimeout(()=>{
+          r2.style.transition='transform 0.6s ease-out,opacity 0.6s ease-out';
+          r2.style.transform=`scale(${i===0?1.9:2.3})`;r2.style.opacity='0';
+        },10);
+      },i*90);
+    });
+  }
+
+  function buildBeat(startX,bpm){
+    const spike=Math.min(100,36+bpm*0.37);
+    return[[0,0],[6,-7],[12,0],[18,5],[22,-spike],[27,16],[33,0],[42,-11],[53,0]]
+      .map(([dx,dy])=>({x:startX+dx,y:MID+dy}));
+  }
+
+  function queueBeat(bpm){
+    const shape=buildBeat(headX+4,bpm);
+    for(let i=0;i<shape.length-1;i++){
+      const p0=shape[i],p1=shape[i+1];
+      const steps=Math.max(1,Math.abs(Math.round(p1.x)-Math.round(p0.x)));
+      for(let s=0;s<=steps;s++){
+        const t2=s/steps;
+        segments[Math.round(p0.x+(p1.x-p0.x)*t2)]=p0.y+(p1.y-p0.y)*t2;
+      }
+    }
+  }
+
+  function scheduleNext(){
+    if(!running)return;
+    queueBeat(currentBpm);pulseFX(currentBpm);playBeat(currentBpm);
+    beatTimeout=setTimeout(scheduleNext,60000/currentBpm);
+  }
+
+  function drawEcg(){
+    ctx.clearRect(0,0,W,H);
+    ctx.fillStyle='#000';ctx.fillRect(0,0,W,H);
+    ctx.strokeStyle='rgba(100,0,0,0.25)';ctx.lineWidth=0.5;
+    for(let y=0;y<H;y+=20){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}
+    for(let x=0;x<W;x+=40){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();}
+    const glow=Math.min(1,(currentBpm-60)/120);
+    ctx.strokeStyle=`rgb(${140+Math.round(glow*80)},0,0)`;
+    ctx.lineWidth=2;ctx.lineJoin='round';ctx.lineCap='round';
+    ctx.beginPath();let started=false;
+    for(let wx=Math.floor(viewX);wx<=Math.floor(headX);wx++){
+      const sx=wx-viewX;
+      const sy=segments[wx]!==undefined?segments[wx]:MID;
+      if(!started){ctx.moveTo(sx,sy);started=true;}else ctx.lineTo(sx,sy);
+    }
+    ctx.stroke();
+    ctx.fillStyle=`rgb(${180+Math.round(glow*60)},20,20)`;
+    ctx.beginPath();ctx.arc(headX-viewX,segments[Math.floor(headX)]??MID,3.5,0,Math.PI*2);ctx.fill();
+    const ex=headX-viewX+2;
+    if(ex<W){
+      ctx.fillStyle='#000';ctx.fillRect(ex,0,Math.min(35,W-ex),H);
+      ctx.strokeStyle='rgba(100,0,0,0.25)';ctx.lineWidth=0.5;
+      for(let y=0;y<H;y+=20){ctx.beginPath();ctx.moveTo(ex,y);ctx.lineTo(Math.min(W,ex+35),y);ctx.stroke();}
+    }
+  }
+
+  function rafLoop(ts){
+    if(!running)return;
+    if(!prevTs)prevTs=ts;
+    const dt=Math.min((ts-prevTs)/1000,0.05);prevTs=ts;
+    headX+=(55+currentBpm*0.75)*dt;
+    if(segments[Math.floor(headX)]===undefined)segments[Math.floor(headX)]=MID;
+    if(headX>viewX+W*0.8)viewX=headX-W*0.8;
+    if(phaseIdx<phases.length){
+      const phase=phases[phaseIdx];
+      if(!phaseStart)phaseStart=ts;
+      const elapsed=ts-phaseStart;
+      const prevBpm=phaseIdx===0?phase.bpm:phases[phaseIdx-1].bpm;
+      currentBpm=Math.round(prevBpm+(phase.bpm-prevBpm)*Math.min(elapsed/phase.duration,1));
+      bpmEl.textContent=currentBpm;
+      phaseEl.textContent=phase.label;
+      if(elapsed>=phase.duration){phaseIdx++;phaseStart=ts;}
+    }else{
+      phaseEl.textContent='flatline...';stop();return;
+    }
+    drawEcg();drawBlood();doFlicker();
+    animFrame=requestAnimationFrame(rafLoop);
+  }
+
+  function startAnim(){
+    running=true;phaseIdx=0;phaseStart=0;currentBpm=60;
+    segments=[];headX=0;viewX=0;prevTs=null;
+    btn.textContent='⏹ stop';
+    heartPath.style.fill='#8b0000';
+    scheduleNext();
+    animFrame=requestAnimationFrame(rafLoop);
+  }
+
+  function stop(){
+    running=false;
+    clearTimeout(beatTimeout);cancelAnimationFrame(animFrame);
+    btn.textContent='▶ begin again';
+    heartPath.style.transform='scale(1)';
+  }
+
+  btn.addEventListener('click',()=>{if(running)stop();else startAnim();});
+
+  soundToggle.addEventListener('click',()=>{
+    if(!audioUnlocked){unlockAudio();return;}
+    soundEnabled=!soundEnabled;
+    updateSoundUI();
+  });
+
+  function handleFirstTouch(){
+    unlockAudio();
+    document.removeEventListener('touchstart',handleFirstTouch);
+    document.removeEventListener('mousedown',handleFirstTouch);
+  }
+  document.addEventListener('touchstart',handleFirstTouch,{passive:true});
+  document.addEventListener('mousedown',handleFirstTouch,{passive:true});
+
+  startAnim();
+})();
+</script>
